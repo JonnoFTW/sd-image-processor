@@ -68,6 +68,9 @@ class Worker(Handler, ConsumerMixin):
                 'ext': 'png',
                 'prompt': payload['prompt'],
                 'negative_prompt': payload.get('negative_prompt')
+            },
+            'headers': {
+                payload.get('headers')
             }
         }
         with self.connection.channel() as channel:
