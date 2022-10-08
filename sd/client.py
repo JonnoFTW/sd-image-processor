@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import threading
 import base64
 from io import BytesIO
@@ -74,4 +75,4 @@ def main(broker_url):
 
 
 if __name__ == '__main__':
-    main('amqp://localhost')
+    main(os.getenv('BROKER_URL', 'amqp://localhost'))
