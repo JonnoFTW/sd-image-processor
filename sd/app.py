@@ -25,7 +25,7 @@ class Worker(Handler, ConsumerMixin):
         self.pipe = pipe
 
     def get_consumers(self, Consumer, channel):
-        print("Making consumer on", self.image_requests_queue.name)
+        print("Making consumer for queue", self.image_requests_queue.name)
         return [
             Consumer(
                 queues=[self.image_requests_queue],
@@ -39,7 +39,7 @@ class Worker(Handler, ConsumerMixin):
     # @torchdynamo.optimize("fx2trt")
     def generate_image(self, message: kombu.Message):
         payload = message.payload
-        print("Got message:", message, payload)
+        print("Got message:", payload)
         if not payload['prompt'].strip():
             print("Received message with no prompt")
             message.ack()
