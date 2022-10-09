@@ -1,3 +1,4 @@
+import time
 import asyncio
 import base64
 import os
@@ -24,6 +25,7 @@ class Worker(Handler, ConsumerMixin):
         self.pipe = pipe
 
     def get_consumers(self, Consumer, channel):
+        print("Making consumer on", self.image_requests_queue.name)
         return [
             Consumer(
                 queues=[self.image_requests_queue],
@@ -42,7 +44,8 @@ class Worker(Handler, ConsumerMixin):
             print("Received message with no prompt")
             message.ack()
             return
-
+        start = time.time()
+        seed = int(start)
         image = self.pipe(
             prompt=payload['prompt'],
             height=payload.get('height', 512),
@@ -50,8 +53,9 @@ class Worker(Handler, ConsumerMixin):
             num_inference_steps=payload.get('steps', 50),
             guidance_scale=payload.get('scale', 7.5),
             negative_prompt=payload.get('negative_prompt'),
-            seed=payload.get('seed')
+            seed=payload.get('seed', seed)
         ).images[0]
+        took = time.time() - start
 
         buff = BytesIO()
         meta_data = PngInfo()
@@ -67,11 +71,15 @@ class Worker(Handler, ConsumerMixin):
                 'img_blob': base64.b64encode(buff.getvalue()).decode('ascii'),
                 'ext': 'png',
                 'prompt': payload['prompt'],
-                'negative_prompt': payload.get('negative_prompt')
+                'negative_prompt': payload.get('negative_prompt'),
+                'duration': round(took, 2),
+                'height': payload.get('height'),
+                'width': payload.get('width'),
+                'steps': payload.get('steps'),
+                'scale': payload.get('scale'),
+                'seed': payload.get('seed', seed)
             },
-            'headers': {
-                payload.get('headers')
-            }
+            'headers': payload.get('headers')
         }
         with self.connection.channel() as channel:
             producer = Producer(channel)
@@ -87,6 +95,7 @@ class Worker(Handler, ConsumerMixin):
 
 
 def run_worker(broker_url, pipe):
+    print("connecting to", broker_url)
     with Connection(broker_url) as conn:
         print(' [x] Awaiting image requests')
         worker = Worker(conn, pipe)
