@@ -83,6 +83,7 @@ class Worker(Handler, ConsumerMixin):
         }
         with self.connection.channel() as channel:
             producer = Producer(channel)
+            print("publishing result to", self.exchange, 'routing_key=', message.headers['return-key'])
             producer.publish(
                 result,
                 exchange=self.exchange,
