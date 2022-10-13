@@ -39,7 +39,7 @@ class Worker(Handler, ConsumerMixin):
     # @torchdynamo.optimize("fx2trt")
     def generate_image(self, message: kombu.Message):
         payload = message.payload
-        print("Got message:", payload)
+        print("Got message:", payload, message.headers)
         if not payload['prompt'].strip():
             print("Received message with no prompt")
             message.ack()
@@ -86,7 +86,7 @@ class Worker(Handler, ConsumerMixin):
             producer.publish(
                 result,
                 exchange=self.exchange,
-                routing_key='res',
+                routing_key=message.headers['return-key'],
                 serializer='json',
                 retry=True
             )
