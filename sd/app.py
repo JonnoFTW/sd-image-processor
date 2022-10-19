@@ -3,6 +3,7 @@ import asyncio
 import base64
 import os
 from io import BytesIO
+import atexit
 
 from PIL.PngImagePlugin import PngInfo
 
@@ -100,6 +101,7 @@ def run_worker(broker_url, pipe):
     with Connection(broker_url) as conn:
         print(' [x] Awaiting image requests')
         worker = Worker(conn, pipe)
+        atexit.register(conn.release)
         asyncio.ensure_future(worker.run())
 
 
