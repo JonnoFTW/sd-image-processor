@@ -22,6 +22,9 @@ import logging
 logging.basicConfig()
 logging.getLogger().setLevel(logging.INFO)
 
+# "CompVis/stable-diffusion-v1-4"
+MODEL_NAME = "runwayml/stable-diffusion-v1-5"
+
 
 class Worker(Handler, ConsumerMixin):
     def __init__(self, connection: Connection, pipe):
@@ -115,12 +118,13 @@ def run_worker(broker_url, pipe):
 if __name__ == "__main__":
     print(" [x] Loading pipeline")
     _pipe = StableDiffusionPipeline.from_pretrained(
-        "CompVis/stable-diffusion-v1-4",
+        MODEL_NAME,
         torch_type=torch.float16,
         revision="fp16"
-    )
+    ).to("cuda")
     # disable safety check
     _pipe.safety_checker = lambda images, **kwargs: (images,)
+    _pipe.enable_xformers_memory_efficient_attention()
     _pipe.enable_attention_slicing()
     _pipe = _pipe.to("cuda")
 
