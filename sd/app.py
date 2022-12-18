@@ -66,7 +66,7 @@ class Worker(Handler, ConsumerMixin):
                 self.generate_image(message)
             except queue.Empty:
                 pass
-        print("Exited")
+        print("Exited process_queue()")
 
     # @torchdynamo.optimize("ofi")
     # @torchdynamo.optimize("fx2trt")
@@ -192,17 +192,25 @@ def get_connection():
 
 
 def run_worker():
-    with get_connection() as conn:
-        print(' [✓] Awaiting image requests')
-        worker = Worker(conn)
+    exit_called = False
+    try:
+        with get_connection() as conn:
+            print(' [✓] Awaiting image requests')
+            worker = Worker(conn)
 
-        def on_exit():
-            worker.running = False
-            worker.worker.join()
-            conn.release()
+            def on_exit():
+                if not exit_called:
+                    print("calling on_exit()")
+                    worker.running = False
+                    worker.worker.join()
+                    conn.release()
 
-        atexit.register(on_exit)
-        asyncio.ensure_future(worker.run())
+            atexit.register(on_exit)
+            asyncio.ensure_future(worker.run())
+    except KeyboardInterrupt:
+        print("Quitting")
+        on_exit()
+        exit_called = True
 
 
 def get_pipe(name):
@@ -228,7 +236,4 @@ def get_pipe(name):
 
 
 if __name__ == "__main__":
-    try:
-        run_worker()
-    except KeyboardInterrupt:
-        exit("Quitting")
+    run_worker()
