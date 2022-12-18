@@ -12,7 +12,10 @@ from PIL.PngImagePlugin import PngInfo
 
 import kombu
 import torch
-from diffusers import DPMSolverMultistepScheduler, DiffusionPipeline
+from diffusers import DPMSolverMultistepScheduler, DiffusionPipeline, EulerAncestralDiscreteScheduler, \
+    EulerDiscreteScheduler, KarrasVeScheduler, DPMSolverSinglestepScheduler, HeunDiscreteScheduler, \
+    KDPM2DiscreteScheduler, KDPM2AncestralDiscreteScheduler, LMSDiscreteScheduler, PNDMScheduler, ScoreSdeVeScheduler, \
+    IPNDMScheduler, VQDiffusionScheduler
 
 from kombu import Connection, Producer
 from kombu.mixins import ConsumerMixin
@@ -26,14 +29,63 @@ logging.basicConfig()
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-
 models = {
-    '1.5': ("runwayml/stable-diffusion-v1-5", "fp16", None),
-    '2.1': ("stabilityai/stable-diffusion-2-1", "fp16", None),
-    'analog-1.0': ("wavymulder/Analog-Diffusion", None, True),
-    'anime-3.0': ("Linaqruf/anything-v3.0", None, None),
+    '1.5': {
+        'name': "runwayml/stable-diffusion-v1-5",
+        'revision': "fp16",
+        'scheduler': None
+    },
+    '2.1': {
+        "name": "stabilityai/stable-diffusion-2-1",
+        "revision": "fp16",
+        "scheduler": None
+    },
+    'analog-1.0': {
+        "name": "wavymulder/Analog-Diffusion",
+        "revision": None,
+        "scheduler": lambda: DPMSolverMultistepScheduler.from_pretrained(models['analog-1.0']['name'], subfolder="scheduler")
+    },
+    'anime-3.0': {
+        "name": "Linaqruf/anything-v3.0",
+        "revision": None,
+        "scheduler": None
+    },
+    'hassanblend-1.4': {
+        'name': 'hassanblend/hassanblend1.4',
+        'revision': None,
+        'scheduler': lambda: DPMSolverMultistepScheduler(
+            beta_start=0.00085,
+            beta_end=0.012,
+            beta_schedule="scaled_linear",
+            num_train_timesteps=1000,
+            trained_betas=None,
+            prediction_type='epsilon',
+            thresholding=False,
+            algorithm_type="dpmsolver++",
+            solver_type="midpoint",
+            lower_order_final=True,
+        )
+    }
 }
+
+schedulers = {
+    'euler-a': EulerAncestralDiscreteScheduler,
+    'euler-d': EulerDiscreteScheduler,
+    'dpmsolver-multi': DPMSolverMultistepScheduler,
+    'dpmsolver-single': DPMSolverSinglestepScheduler,
+    'karras': KarrasVeScheduler,
+    'huen': HeunDiscreteScheduler,
+    'kdpm2-d': KDPM2DiscreteScheduler,
+    'kdpm2-a': KDPM2AncestralDiscreteScheduler,
+    'lms-d': LMSDiscreteScheduler,
+    'pndm': PNDMScheduler,
+    'score-sde-ve': ScoreSdeVeScheduler,
+    'ipndm': IPNDMScheduler,
+    'vqdiffusion': VQDiffusionScheduler
+}
+
 DEFAULT_MODEL = '2.1'
+DEFAULT_SCHEDULER = 'euler-a'
 
 
 class Worker(Handler, ConsumerMixin):
@@ -46,7 +98,6 @@ class Worker(Handler, ConsumerMixin):
         self._model_name = threading.local()
         self.worker = threading.Thread(target=self.process_queue)
         self.worker.start()
-
 
     def get_consumers(self, Consumer, channel):
         print("Making consumer for queue", self.image_requests_queue.name)
@@ -85,6 +136,7 @@ class Worker(Handler, ConsumerMixin):
     @pipe.deleter
     def pipe(self):
         del self._pipe.val
+
     @property
     def model_name(self):
         return getattr(self._model_name, 'val', None)
@@ -116,6 +168,16 @@ class Worker(Handler, ConsumerMixin):
                     torch.cuda.empty_cache()
                 self.pipe = get_pipe(model_name)
                 self.model_name = model_name
+            if payload.get('scheduler'):
+                scheduler_name = payload['scheduler']
+                if scheduler_name not in schedulers:
+                    raise ValueError(f'scheduler must be one of {", ".join([m for m in schedulers.keys()])}')
+                if not models[self.model_name]['scheduler'] and scheduler_name != DEFAULT_SCHEDULER:
+                    # go ahead and load the scheduler
+                    self.pipe.scheduler = schedulers[scheduler_name].from_config(self.pipe.scheduler.config)
+            else:
+                self.pipe.scheduler = schedulers[DEFAULT_SCHEDULER].from_config(self.pipe.scheduler.config)
+            scheduler_cls = self.pipe.scheduler.__class__.__name__
             with torch.inference_mode():
                 height = payload.get('height', 768)
                 width = payload.get('width', 768)
@@ -145,6 +207,7 @@ class Worker(Handler, ConsumerMixin):
             buff = BytesIO()
             meta_data = PngInfo()
             meta_data.add_text('Generated-With', model_name)
+            meta_data.add_text('Generated-With-Scheduler', scheduler_cls)
             for field in ('prompt', 'steps', 'scale', 'negative_prompt', 'seed'):
                 if payload.get(field):
                     meta_data.add_text(field, str(payload[field]))
@@ -164,6 +227,7 @@ class Worker(Handler, ConsumerMixin):
                     'scale': payload.get('scale'),
                     'seed': payload.get('seed', seed),
                     'model': payload.get('model'),
+                    'scheduler': payload.get('scheduler')
                 },
                 'headers': payload.get('headers')
             }
@@ -214,8 +278,13 @@ def run_worker():
 
 
 def get_pipe(name):
-    model_name, revision, load_scheduler = models[name]
+    config = models[name]
+    model_name = config['name']
+    revision = config['revision']
+    load_scheduler = config['scheduler']
 
+    torch.cuda.empty_cache()
+    
     logger.info(" [✓] Loading model: %s", model_name)
     pipe = DiffusionPipeline.from_pretrained(
         model_name,
@@ -226,11 +295,14 @@ def get_pipe(name):
         requires_safety_checker=False
     )  # type: StableDiffusionLongPromptWeightingPipeline
     if load_scheduler:
-        pipe.scheduler = DPMSolverMultistepScheduler.from_pretrained(model_name, subfolder="scheduler")
+        pipe.scheduler = load_scheduler()
     else:
-        pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+        scheduler = schedulers[DEFAULT_SCHEDULER]
+        pipe.scheduler = scheduler.from_config(pipe.scheduler.config)
     pipe.enable_xformers_memory_efficient_attention()
     pipe.enable_attention_slicing()
+    pipe.enable_vae_slicing()
+    # pipe.enable_sequential_cpu_offload()
     pipe.to("cuda")
     return pipe
 
