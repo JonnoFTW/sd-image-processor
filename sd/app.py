@@ -20,6 +20,9 @@ from diffusers import DPMSolverMultistepScheduler, DiffusionPipeline, EulerAnces
 from kombu import Connection, Producer
 from kombu.mixins import ConsumerMixin
 
+from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
+import humanize
+
 from sd.attention import StableDiffusionLongPromptWeightingPipeline
 from sd.handler import Handler
 
@@ -28,6 +31,8 @@ import logging
 logging.basicConfig()
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+nvmlInit()
 
 models = {
     '1.5': {
@@ -165,7 +170,6 @@ class Worker(Handler, ConsumerMixin):
             if model_name != self.model_name:
                 if self.pipe is not None:
                     del self.pipe
-                    torch.cuda.empty_cache()
                 self.pipe = get_pipe(model_name)
                 self.model_name = model_name
             if payload.get('scheduler'):
@@ -276,15 +280,27 @@ def run_worker():
         on_exit()
         exit_called = True
 
+def clear_cache():
+    logger.debug("CLEARING CUDA CACHE")
+    show_gpu_mem_stats()
+    torch.cuda.empty_cache()
+    time.sleep(2)
+    logger.debug("AFTER CACHE CLEAR")
+    show_gpu_mem_stats()
+
+def show_gpu_mem_stats():
+    h = nvmlDeviceGetHandleByIndex(0)
+    info = nvmlDeviceGetMemoryInfo(h)
+    logger.debug(f'total : {info.total}b\t ({humanize.naturalsize(info.total)})')
+    logger.debug(f'free  : {info.free}b\t ({humanize.naturalsize(info.free)})')
+    logger.debug(f'used  : {info.used}b\t ({humanize.naturalsize(info.used)})')
 
 def get_pipe(name):
     config = models[name]
     model_name = config['name']
     revision = config['revision']
     load_scheduler = config['scheduler']
-
-    torch.cuda.empty_cache()
-    
+    clear_cache()
     logger.info(" [✓] Loading model: %s", model_name)
     pipe = DiffusionPipeline.from_pretrained(
         model_name,
@@ -304,6 +320,7 @@ def get_pipe(name):
     pipe.enable_vae_slicing()
     # pipe.enable_sequential_cpu_offload()
     pipe.to("cuda")
+    logger.info(" [✓] Finished loading model: %s", model_name)
     return pipe
 
 
