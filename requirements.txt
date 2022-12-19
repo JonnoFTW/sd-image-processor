@@ -2,3 +2,7 @@ diffusers
 kombu
 torchdynamo
 pillow
+humanize
+pynvml
+xformers
+transformers
