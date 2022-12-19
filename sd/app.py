@@ -1,3 +1,4 @@
+import gc
 import queue
 import time
 import asyncio
@@ -283,8 +284,9 @@ def run_worker():
 def clear_cache():
     logger.debug("CLEARING CUDA CACHE")
     show_gpu_mem_stats()
+    gc.collect()
     torch.cuda.empty_cache()
-    time.sleep(2)
+    torch.cuda.synchronize()
     logger.debug("AFTER CACHE CLEAR")
     show_gpu_mem_stats()
 
