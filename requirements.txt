@@ -6,3 +6,5 @@ humanize
 pynvml
 xformers
 transformers
+pynvml
+humanize
