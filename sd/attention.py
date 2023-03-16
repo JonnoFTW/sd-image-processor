@@ -282,8 +282,10 @@ def get_weighted_text_embeddings(
     max_length = (pipe.tokenizer.model_max_length - 2) * max_embeddings_multiples + 2
     if isinstance(prompt, str):
         prompt = [prompt]
-
+    #print("get_weighted_text_embeddings of", prompt)
+    #print("get_weighted_text_embeddings of negative prompt", uncond_prompt)
     if not skip_parsing:
+        #print("Parsing")
         prompt_tokens, prompt_weights = get_prompts_with_weights(pipe, prompt, max_length - 2)
         if uncond_prompt is not None:
             if isinstance(uncond_prompt, str):
@@ -302,7 +304,7 @@ def get_weighted_text_embeddings(
                 for token in pipe.tokenizer(uncond_prompt, max_length=max_length, truncation=True).input_ids
             ]
             uncond_weights = [[1.0] * len(token) for token in uncond_tokens]
-
+    #print("prompt tokens=", prompt_tokens)
     # round up the longest length of tokens to a multiple of (model_max_length - 2)
     max_length = max([len(token) for token in prompt_tokens])
     if uncond_prompt is not None:
@@ -759,8 +761,8 @@ class StableDiffusionLongPromptWeightingPipeline(StableDiffusionPipeline):
             (nsfw) content, according to the `safety_checker`.
         """
         message = "Please use `image` instead of `init_image`."
-        init_image = deprecate("init_image", "0.12.0", message, take_from=kwargs)
-        image = init_image or image
+        #init_image = deprecate("init_image", "0.13.0", message, take_from=kwargs)
+        # print("using init_image?", kwargs.get('init_image'))
 
         # 0. Default height and width to unet
         height = height or self.unet.config.sample_size * self.vae_scale_factor
