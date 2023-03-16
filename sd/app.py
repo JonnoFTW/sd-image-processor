@@ -16,7 +16,8 @@ import torch
 from diffusers import DPMSolverMultistepScheduler, DiffusionPipeline, EulerAncestralDiscreteScheduler, \
     EulerDiscreteScheduler, KarrasVeScheduler, DPMSolverSinglestepScheduler, HeunDiscreteScheduler, \
     KDPM2DiscreteScheduler, KDPM2AncestralDiscreteScheduler, LMSDiscreteScheduler, PNDMScheduler, ScoreSdeVeScheduler, \
-    IPNDMScheduler, VQDiffusionScheduler
+    IPNDMScheduler, VQDiffusionScheduler, StableDiffusionUpscalePipeline
+from diffusers.models import AutoencoderKL
 
 from kombu import Connection, Producer
 from kombu.mixins import ConsumerMixin
@@ -25,6 +26,7 @@ from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
 import humanize
 
 from sd.attention import StableDiffusionLongPromptWeightingPipeline
+
 from sd.handler import Handler
 
 import logging
@@ -56,6 +58,24 @@ models = {
         "revision": None,
         "scheduler": None
     },
+    'hassanblend-1.5': {
+        'name': 'hassanblend/hassanblend1.5.1.2',
+        'revision': None,
+        'scheduler': lambda: DPMSolverMultistepScheduler(
+            beta_start=0.00085,
+            beta_end=0.012,
+            beta_schedule="scaled_linear",
+            num_train_timesteps=1000,
+            trained_betas=None,
+            prediction_type='epsilon',
+            thresholding=False,
+            algorithm_type="dpmsolver++",
+            solver_type="midpoint",
+            lower_order_final=True,
+        ),
+        # 'vae': 'https://huggingface.co/stabilityai/sd-vae-ft-mse-original/resolve/main/vae-ft-mse-840000-ema-pruned.ckpt'
+        'vae': 'stabilityai/sd-vae-ft-mse'
+    },
     'hassanblend-1.4': {
         'name': 'hassanblend/hassanblend1.4',
         'revision': None,
@@ -71,7 +91,12 @@ models = {
             solver_type="midpoint",
             lower_order_final=True,
         )
-    }
+    },
+    'rickroll': {
+        "name": "TheLastBen/rick-roll-style",
+        "revision": None,
+        "scheduler": lambda: DPMSolverMultistepScheduler.from_pretrained(models['rickroll']['name'], subfolder="scheduler")
+    },
 }
 
 schedulers = {
@@ -92,7 +117,6 @@ schedulers = {
 
 DEFAULT_MODEL = '2.1'
 DEFAULT_SCHEDULER = 'euler-a'
-
 
 class Worker(Handler, ConsumerMixin):
     def __init__(self, connection: Connection):
@@ -125,10 +149,7 @@ class Worker(Handler, ConsumerMixin):
                 pass
         print("Exited process_queue()")
 
-    # @torchdynamo.optimize("ofi")
-    # @torchdynamo.optimize("fx2trt")
     def enqueue_image_request(self, message: kombu.Message):
-        # print("Enqueuing request")
         self.queue.put_nowait(message)
 
     @property
@@ -162,31 +183,41 @@ class Worker(Handler, ConsumerMixin):
             message.ack()
             return
         start = time.time()
-        seed = int(start)
+        seed = payload.get('seed', int(start))
 
         try:
             model_name = payload.get('model', DEFAULT_MODEL)
             if model_name not in models:
                 raise ValueError(f'model must be one of {", ".join([m for m in models.keys()])}')
-            if model_name != self.model_name:
+            if model_name != self.model_name or self.pipe is None:
                 if self.pipe is not None:
                     del self.pipe
                 self.pipe = get_pipe(model_name)
                 self.model_name = model_name
             if payload.get('scheduler'):
+                # load user specified scheduler
                 scheduler_name = payload['scheduler']
                 if scheduler_name not in schedulers:
                     raise ValueError(f'scheduler must be one of {", ".join([m for m in schedulers.keys()])}')
-                if not models[self.model_name]['scheduler'] and scheduler_name != DEFAULT_SCHEDULER:
-                    # go ahead and load the scheduler
-                    self.pipe.scheduler = schedulers[scheduler_name].from_config(self.pipe.scheduler.config)
+                print("using user specified scheduler:", scheduler_name)
+                scheduler = schedulers[scheduler_name].from_config(self.pipe.scheduler.config)
+            elif models[self.model_name].get('scheduler') is not None:
+                # load default scheduler for this model
+                print("using default scheduler for this model")
+                scheduler = models[self.model_name]['scheduler']()
+                scheduler_name = scheduler.__class__.__name__
             else:
-                self.pipe.scheduler = schedulers[DEFAULT_SCHEDULER].from_config(self.pipe.scheduler.config)
+                # load the global default scheduler
+                scheduler_name = DEFAULT_SCHEDULER
+                print("using default scheduler", DEFAULT_SCHEDULER)
+                scheduler = schedulers[DEFAULT_SCHEDULER].from_config(self.pipe.scheduler.config)
+            logger.info(f"Using scheduler {scheduler_name}")
+            self.pipe.scheduler = scheduler
             scheduler_cls = self.pipe.scheduler.__class__.__name__
             with torch.inference_mode():
                 height = payload.get('height', 768)
                 width = payload.get('width', 768)
-                generator = torch.Generator(device=self.pipe.device).manual_seed(payload.get('seed', seed))
+                generator = torch.Generator(device=self.pipe.device).manual_seed(seed)
                 args = dict(
                     prompt=payload['prompt'],
                     height=height,
@@ -195,7 +226,8 @@ class Worker(Handler, ConsumerMixin):
                     guidance_scale=payload.get('scale', 7.5),
                     # scaled_guidance_scale=payload.get('sscale', None),
                     negative_prompt=payload.get('negative_prompt'),
-                    generator=generator
+                    generator=generator,
+                    max_embeddings_multiples=3,
                 )
                 if payload.get('img'):
                     func = self.pipe.img2img
@@ -206,8 +238,13 @@ class Worker(Handler, ConsumerMixin):
                     args['image'] = input_image
                 else:
                     func = self.pipe.text2img
-                image = func(**args).images[0]
+                image = func(**args).images[0] # type: Image
             took = time.time() - start
+            # TODO: implement hi res fix
+            #upscale = 'upscale' in payload
+            #if upscale:
+            #    logger.info("Upscaling")
+            #    image = self.upscale(image, args, generator)
 
             buff = BytesIO()
             meta_data = PngInfo()
@@ -216,9 +253,14 @@ class Worker(Handler, ConsumerMixin):
             for field in ('prompt', 'steps', 'scale', 'negative_prompt', 'seed'):
                 if payload.get(field):
                     meta_data.add_text(field, str(payload[field]))
-
+            meta_data.add_text('parameters', f'Prompt:{args["prompt"]}\nNegative prompt: {args["negative_prompt"]}\nSteps: {args["num_inference_steps"]}, '
+                                             f'Sampler: {scheduler_name}, CFG scale: {args["guidance_scale"]}, Seed: {seed}, Size: {args["height"]}x{args["width"]},\n'
+                                             f'Model: {model_name}\n'
+                                             f'Generated with: https://github.com/jonnoftw/sd-image-processor'
+                               )
+            
             image.save(buff, format='png', pnginfo=meta_data)
-
+            del args['generator']
             result = {
                 'result': {
                     'img_blob': base64.b64encode(buff.getvalue()).decode('ascii'),
@@ -232,8 +274,10 @@ class Worker(Handler, ConsumerMixin):
                     'scale': payload.get('scale'),
                     'seed': payload.get('seed', seed),
                     'model': payload.get('model'),
-                    'scheduler': payload.get('scheduler')
+                    'scheduler': payload.get('scheduler'),
+             #       'upscale': upscale,
                 },
+                'args': args,
                 'headers': payload.get('headers')
             }
         except Exception as exc:
@@ -252,6 +296,32 @@ class Worker(Handler, ConsumerMixin):
                     retry=True
                 )
         message.ack()
+
+    def upscale(self, image, args, generator) -> Image:
+        """
+        Scale an image up by scale, if <= 1, do nothing
+        :param image: the image to be scaled
+        :return:
+        """
+        del self.pipe
+        time.sleep(0.25)
+        clear_cache()
+        model_id = "stabilityai/stable-diffusion-x4-upscaler"
+        pipeline = StableDiffusionUpscalePipeline.from_pretrained(model_id, torch_dtype=torch.float16)
+        pipeline.enable_xformers_memory_efficient_attention()
+        pipeline.enable_attention_slicing()
+        pipeline.enable_sequential_cpu_offload()
+        #pipeline.enable_vae_slicing()
+        pipeline = pipeline.to("cuda")
+        scaled_image = pipeline(
+            prompt=args['prompt'],
+            image=image,
+            negative_prompt=args.get('negative_prompt'),
+            generator=generator
+        ).images[0]
+        del pipeline
+        clear_cache()
+        return scaled_image
 
 
 def get_connection():
@@ -281,6 +351,7 @@ def run_worker():
         on_exit()
         exit_called = True
 
+
 def clear_cache():
     logger.debug("CLEARING CUDA CACHE")
     show_gpu_mem_stats()
@@ -290,12 +361,14 @@ def clear_cache():
     logger.debug("AFTER CACHE CLEAR")
     show_gpu_mem_stats()
 
+
 def show_gpu_mem_stats():
     h = nvmlDeviceGetHandleByIndex(0)
     info = nvmlDeviceGetMemoryInfo(h)
     logger.debug(f'total : {info.total}b\t ({humanize.naturalsize(info.total)})')
     logger.debug(f'free  : {info.free}b\t ({humanize.naturalsize(info.free)})')
     logger.debug(f'used  : {info.used}b\t ({humanize.naturalsize(info.used)})')
+
 
 def get_pipe(name):
     config = models[name]
@@ -304,13 +377,25 @@ def get_pipe(name):
     load_scheduler = config['scheduler']
     clear_cache()
     logger.info(" [✓] Loading model: %s", model_name)
-    pipe = DiffusionPipeline.from_pretrained(
-        model_name,
+
+    kwargs = dict(
+        # custom_pipeline="lpw_stable_diffusion",
         custom_pipeline="sd/attention.py",
-        torch_dtype=torch.float16,
+        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
         revision=revision,
         safety_checker=None,
         requires_safety_checker=False
+    )
+
+    vae = config.get('vae')
+    if vae:
+        logger.info("loading custom VAE: %s", vae)
+        vae = AutoencoderKL.from_pretrained(vae, torch_dtype=kwargs['torch_dtype'])
+        kwargs['vae'] = vae
+
+    pipe = DiffusionPipeline.from_pretrained(
+        model_name,
+        **kwargs
     )  # type: StableDiffusionLongPromptWeightingPipeline
     if load_scheduler:
         pipe.scheduler = load_scheduler()
