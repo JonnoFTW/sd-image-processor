@@ -178,8 +178,8 @@ class Worker(Handler, ConsumerMixin):
         if 'img' in payload_to_show:
             payload_to_show['img'] = "<IMAGE>"
         print("[→] Got message:", payload_to_show, message.headers)
-        if not payload['prompt'].strip():
-            print(" [✘] Received message with no prompt")
+        if not payload['prompt'].strip() and 'img' not in payload:
+            print(" [✘] Received message with no prompt or image")
             message.ack()
             return
         start = time.time()
@@ -209,7 +209,7 @@ class Worker(Handler, ConsumerMixin):
             else:
                 # load the global default scheduler
                 scheduler_name = DEFAULT_SCHEDULER
-                print("using default scheduler", DEFAULT_SCHEDULER)
+                # print("using default scheduler", DEFAULT_SCHEDULER)
                 scheduler = schedulers[DEFAULT_SCHEDULER].from_config(self.pipe.scheduler.config)
             logger.info(f"Using scheduler {scheduler_name}")
             self.pipe.scheduler = scheduler
@@ -232,9 +232,19 @@ class Worker(Handler, ConsumerMixin):
                 if payload.get('img'):
                     func = self.pipe.img2img
                     input_image = Image.open(BytesIO(base64.b64decode(payload['img']))).convert('RGB')
+                    # resize to the lowest multiple of 8
+                    new_width = input_image.width
+                    new_height = input_image.height
+
+                    if new_width % 8 != 0:
+                        new_width -= new_width % 8
+                    if new_height % 8 != 0:
+                        new_height -= new_height % 8
+                    input_image.resize((new_width, new_height))
+
                     args['height'] = input_image.height
                     args['width'] = input_image.width
-                    args['num_inference_steps'] = 32
+                    args['num_inference_steps'] = payload.get('steps', 25)
                     args['image'] = input_image
                 else:
                     func = self.pipe.text2img
@@ -261,6 +271,8 @@ class Worker(Handler, ConsumerMixin):
             
             image.save(buff, format='png', pnginfo=meta_data)
             del args['generator']
+            if 'image' in args:
+                args['image'] = payload['img']
             result = {
                 'result': {
                     'img_blob': base64.b64encode(buff.getvalue()).decode('ascii'),
