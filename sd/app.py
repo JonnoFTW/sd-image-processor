@@ -224,6 +224,7 @@ class Worker(Handler, ConsumerMixin):
                     width=width,
                     num_inference_steps=payload.get('steps', 50),
                     guidance_scale=payload.get('scale', 7.5),
+                    strength=payload.get('strength', 0.8),
                     # scaled_guidance_scale=payload.get('sscale', None),
                     negative_prompt=payload.get('negative_prompt'),
                     generator=generator,
