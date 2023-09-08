@@ -42,26 +42,35 @@ for log_name in (
 
 nvmlInit()
 
+# height, width
+SIZE_768 = (768, 768)
+SIZE_512 = (512, 512)
+
 models = {
     '1.5': {
         'name': "runwayml/stable-diffusion-v1-5",
         'revision': "fp16",
-        'scheduler': None
+        'scheduler': None,
+        'default_size': SIZE_512
     },
     '2.1': {
         "name": "stabilityai/stable-diffusion-2-1",
         "revision": "fp16",
-        "scheduler": None
+        "scheduler": None,
+        'default_size': SIZE_768
     },
     'analog-1.0': {
         "name": "wavymulder/Analog-Diffusion",
         "revision": None,
-        "scheduler": lambda: DPMSolverMultistepScheduler.from_pretrained(models['analog-1.0']['name'], subfolder="scheduler")
+        "scheduler": lambda: DPMSolverMultistepScheduler.from_pretrained(models['analog-1.0']['name'],
+                                                                         subfolder="scheduler"),
+        'default_size': SIZE_512
     },
     'anime-3.0': {
         "name": "Linaqruf/anything-v3.0",
         "revision": None,
-        "scheduler": None
+        "scheduler": None,
+        'default_size': SIZE_512
     },
     'hassanblend-1.5': {
         'name': 'hassanblend/hassanblend1.5.1.2',
@@ -78,30 +87,33 @@ models = {
             solver_type="midpoint",
             lower_order_final=True,
         ),
-        # 'vae': 'https://huggingface.co/stabilityai/sd-vae-ft-mse-original/resolve/main/vae-ft-mse-840000-ema-pruned.ckpt'
-        'vae': 'stabilityai/sd-vae-ft-mse'
-    },
-    'hassanblend-1.4': {
-        'name': 'hassanblend/hassanblend1.4',
-        'revision': None,
-        'scheduler': lambda: DPMSolverMultistepScheduler(
-            beta_start=0.00085,
-            beta_end=0.012,
-            beta_schedule="scaled_linear",
-            num_train_timesteps=1000,
-            trained_betas=None,
-            prediction_type='epsilon',
-            thresholding=False,
-            algorithm_type="dpmsolver++",
-            solver_type="midpoint",
-            lower_order_final=True,
-        )
+        'vae': 'stabilityai/sd-vae-ft-mse',
+        'default_size': SIZE_512
     },
     'rickroll': {
         "name": "TheLastBen/rick-roll-style",
         "revision": None,
-        "scheduler": lambda: DPMSolverMultistepScheduler.from_pretrained(models['rickroll']['name'], subfolder="scheduler")
+        "scheduler": lambda: DPMSolverMultistepScheduler.from_pretrained(models['rickroll']['name'],
+                                                                         subfolder="scheduler"),
+        'default_size': SIZE_512
     },
+    'freedom': {
+        'name': 'artificialguybr/freedom',
+        'revision': None,
+        'scheduler': None,
+        'default_size': SIZE_768,
+        'vae': 'stabilityai/sd-vae-ft-mse',
+    },
+    'xl': {
+        "name": "stabilityai/stable-diffusion-xl-base-1.0",
+        "revision": None,
+        'default_size': (1024, 1024),
+        'default_steps': 16,
+        'vae': "madebyollin/sdxl-vae-fp16-fix",
+        'scheduler': None,
+        'variant': 'fp16',
+        'pipeline': 'sd/xl_pipeline.py'
+    }
 }
 
 schedulers = {
@@ -122,6 +134,7 @@ schedulers = {
 
 DEFAULT_MODEL = '2.1'
 DEFAULT_SCHEDULER = 'euler-a'
+
 
 class Worker(Handler, ConsumerMixin):
     def __init__(self, connection: Connection):
@@ -220,20 +233,21 @@ class Worker(Handler, ConsumerMixin):
             self.pipe.scheduler = scheduler
             scheduler_cls = self.pipe.scheduler.__class__.__name__
             with torch.inference_mode():
-                height = payload.get('height', 768)
-                width = payload.get('width', 768)
+                default_h, default_w = models[model_name]['default_size']
+                height = payload.get('height', default_h)
+                width = payload.get('width', default_w)
                 generator = torch.Generator(device=self.pipe.device).manual_seed(seed)
                 args = dict(
                     prompt=payload['prompt'],
                     height=height,
                     width=width,
-                    num_inference_steps=payload.get('steps', 50),
+                    num_inference_steps=payload.get('steps', models[model_name].get('default_steps', 50)),
                     guidance_scale=payload.get('scale', 7.5),
                     strength=payload.get('strength', 0.8),
                     # scaled_guidance_scale=payload.get('sscale', None),
                     negative_prompt=payload.get('negative_prompt'),
                     generator=generator,
-                    max_embeddings_multiples=3,
+                    # max_embeddings_multiples=3,
                 )
                 if payload.get('img'):
                     func = self.pipe.img2img
