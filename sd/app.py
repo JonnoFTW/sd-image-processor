@@ -279,32 +279,66 @@ class Worker(Handler, ConsumerMixin):
                     width=width,
                     num_inference_steps=payload.get('steps', models[model_name].get('default_steps', 50)),
                     guidance_scale=payload.get('scale', 7.5),
-                    strength=payload.get('strength', 0.8),
                     # scaled_guidance_scale=payload.get('sscale', None),
                     negative_prompt=payload.get('negative_prompt'),
                     generator=generator,
                     # max_embeddings_multiples=3,
                 )
                 if payload.get('img'):
+                    args['strength'] = payload.get('strength', 0.8)
+                    del args['height']
+                    del args['width']
                     func = self.pipe.img2img
-                    input_image = Image.open(BytesIO(base64.b64decode(payload['img']))).convert('RGB')
+                    input_image = PIL.Image.open(BytesIO(base64.b64decode(payload['img']))).convert('RGB')
                     # resize to the lowest multiple of 8
-                    new_width = input_image.width
-                    new_height = input_image.height
+                    # new_width = input_image.width
+                    # new_height = input_image.height
 
-                    if new_width % 8 != 0:
-                        new_width -= new_width % 8
-                    if new_height % 8 != 0:
-                        new_height -= new_height % 8
-                    input_image.resize((new_width, new_height))
+                    # if new_width % 8 != 0:
+                    #     new_width -= new_width % 8
+                    # if new_height % 8 != 0:
+                    #     new_height -= new_height % 8
+                    # input_image.resize((new_width, new_height))
 
-                    args['height'] = input_image.height
-                    args['width'] = input_image.width
+                    # args['height'] = input_image.height
+                    # args['width'] = input_image.width
                     args['num_inference_steps'] = payload.get('steps', 25)
                     args['image'] = input_image
                 else:
                     func = self.pipe.text2img
-                image = func(**args).images[0] # type: Image
+
+                if 'hires' in payload or False:
+                    # TODO: implement a hi-res fix from here: https://github.com/huggingface/diffusers/issues/3429
+                    logger.info("Running hi-res fix")
+                    target_height = args['height']
+                    target_width = args['width']
+                    pre_steps = payload.get('pre-steps', 8)
+                    target_inference_steps = args['num_inference_steps'] - pre_steps
+                    desired_pixel_count = 512 * 512
+                    actual_pixel_count = target_height * target_width
+                    scale = math.sqrt(desired_pixel_count / actual_pixel_count)
+                    first_pass_width = int(math.ceil(scale * target_width / 64) * 64)
+                    first_pass_height = int(math.ceil(scale * target_height / 64) * 64)
+                    target_strength = args['strength']
+                    args['strength'] = 0.45
+                    args['height'] = first_pass_height
+                    args['width'] = first_pass_width
+                    args['num_inference_steps'] = pre_steps
+                    ## FIRST PASS
+                    image = func(**args).images[0]  # type: PIL.Image
+                    image.resize((target_width, target_height), PIL.Image.Resampling.LANCZOS)
+                    _, _, image = self.pipe.prepare_latents(image, pre_steps, 1, )
+                    args['image'] = image
+                    args['height'] = target_height
+                    args['width'] = target_width
+                    logger.info('Running 2nd stage for %s', target_inference_steps)
+                    args['num_inference_steps'] = target_inference_steps
+                    args['strength'] = target_strength
+                    ## SECOND PASS
+                    image = self.pipe.img2img(**args).images[0]
+                    del args['image']
+                else:
+                    image = func(**args).images[0]  # type: Image
             took = time.time() - start
             # TODO: implement hi res fix
             #upscale = 'upscale' in payload
@@ -319,12 +353,13 @@ class Worker(Handler, ConsumerMixin):
             for field in ('prompt', 'steps', 'scale', 'negative_prompt', 'seed'):
                 if payload.get(field):
                     meta_data.add_text(field, str(payload[field]))
-            meta_data.add_text('parameters', f'Prompt:{args["prompt"]}\nNegative prompt: {args["negative_prompt"]}\nSteps: {args["num_inference_steps"]}, '
-                                             f'Sampler: {scheduler_name}, CFG scale: {args["guidance_scale"]}, Seed: {seed}, Size: {args["height"]}x{args["width"]},\n'
-                                             f'Model: {model_name}\n'
-                                             f'Generated with: https://github.com/jonnoftw/sd-image-processor'
+            meta_data.add_text('parameters',
+                               f'Prompt:{args["prompt"]}\nNegative prompt: {args["negative_prompt"]}\nSteps: {args["num_inference_steps"]}, '
+                               f'Sampler: {scheduler_name}, CFG scale: {args["guidance_scale"]}, Seed: {seed}, Size: {image.height}x{image.width},\n'
+                               f'Model: {model_name}\n'
+                               f'Generated with: https://github.com/jonnoftw/sd-image-processor'
                                )
-            
+
             image.save(buff, format='png', pnginfo=meta_data)
             del args['generator']
             if 'image' in args:
@@ -343,7 +378,7 @@ class Worker(Handler, ConsumerMixin):
                     'seed': payload.get('seed', seed),
                     'model': payload.get('model'),
                     'scheduler': payload.get('scheduler'),
-             #       'upscale': upscale,
+                    #       'upscale': upscale,
                 },
                 'args': args,
                 'headers': payload.get('headers')
@@ -367,7 +402,7 @@ class Worker(Handler, ConsumerMixin):
         pipeline.enable_xformers_memory_efficient_attention()
         pipeline.enable_attention_slicing()
         pipeline.enable_sequential_cpu_offload()
-        #pipeline.enable_vae_slicing()
+        # pipeline.enable_vae_slicing()
         pipeline = pipeline.to("cuda")
         scaled_image = pipeline(
             prompt=args['prompt'],
@@ -410,12 +445,13 @@ def run_worker():
 
 def clear_cache():
     logger.debug("CLEARING CUDA CACHE")
-    show_gpu_mem_stats()
+    # show_gpu_mem_stats()
     gc.collect()
     torch.cuda.empty_cache()
     torch.cuda.synchronize()
     logger.debug("AFTER CACHE CLEAR")
-    show_gpu_mem_stats()
+    time.sleep(1)
+    # show_gpu_mem_stats()
 
 
 def show_gpu_mem_stats():
@@ -459,7 +495,6 @@ def get_pipe(name):
         logger.info("loading custom VAE: %s", vae)
         vae = AutoencoderKL.from_pretrained(vae, torch_dtype=kwargs['torch_dtype'])
         kwargs['vae'] = vae
-
     pipe = DiffusionPipeline.from_pretrained(
         model_name,
         **kwargs
