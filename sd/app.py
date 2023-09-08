@@ -1,17 +1,22 @@
 import gc
+import math
 import queue
 import time
 import asyncio
 import base64
 import os
+import logging
 from io import BytesIO
 import atexit
 import threading
 
-from PIL import Image
+import PIL.Image
 from PIL.PngImagePlugin import PngInfo
 
 import kombu
+from kombu import Connection, Producer
+from kombu.mixins import ConsumerMixin
+
 import torch
 from diffusers import DPMSolverMultistepScheduler, DiffusionPipeline, EulerAncestralDiscreteScheduler, \
     EulerDiscreteScheduler, KarrasVeScheduler, DPMSolverSinglestepScheduler, HeunDiscreteScheduler, \
@@ -19,21 +24,21 @@ from diffusers import DPMSolverMultistepScheduler, DiffusionPipeline, EulerAnces
     IPNDMScheduler, VQDiffusionScheduler, StableDiffusionUpscalePipeline
 from diffusers.models import AutoencoderKL
 
-from kombu import Connection, Producer
-from kombu.mixins import ConsumerMixin
-
 from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
 import humanize
 
 from sd.attention import StableDiffusionLongPromptWeightingPipeline
-
 from sd.handler import Handler
-
-import logging
 
 logging.basicConfig()
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger.setLevel(os.getenv('LOG_LEVEL', 'INFO'))
+for log_name in (
+        'urllib3.connectionpool',
+        'amqp.connection.Connection.heartbeat_tick',
+        'amqp',
+):
+    logging.getLogger(log_name).setLevel('INFO')
 
 nvmlInit()
 
