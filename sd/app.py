@@ -193,7 +193,7 @@ class Worker(Handler, ConsumerMixin):
         return self.send_response(result, message)
 
     @property
-    def pipe(self):
+    def pipe(self) -> StableDiffusionLongPromptWeightingPipeline:
         return getattr(self._pipe, 'val', None)
 
     @pipe.setter
