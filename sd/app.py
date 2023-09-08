@@ -231,9 +231,9 @@ class Worker(Handler, ConsumerMixin):
         payload_to_show = {k: v for k, v in payload.items()}
         if 'img' in payload_to_show:
             payload_to_show['img'] = "<IMAGE>"
-        print("[→] Got message:", payload_to_show, message.headers)
+        logger.info("[→] Got message: %s %s", payload_to_show, message.headers)
         if not payload['prompt'].strip() and 'img' not in payload:
-            print(" [✘] Received message with no prompt or image")
+            logger.warning(" [✘] Received message with no prompt or image")
             message.ack()
             return
         start = time.time()
@@ -253,11 +253,11 @@ class Worker(Handler, ConsumerMixin):
                 scheduler_name = payload['scheduler']
                 if scheduler_name not in schedulers:
                     raise ValueError(f'scheduler must be one of {", ".join([m for m in schedulers.keys()])}')
-                print("using user specified scheduler:", scheduler_name)
+                logger.debug("using user specified scheduler: %s", scheduler_name)
                 scheduler = schedulers[scheduler_name].from_config(self.pipe.scheduler.config)
             elif models[self.model_name].get('scheduler') is not None:
                 # load default scheduler for this model
-                print("using default scheduler for this model")
+                logger.debug("using default scheduler for this model")
                 scheduler = models[self.model_name]['scheduler']()
                 scheduler_name = scheduler.__class__.__name__
             else:
@@ -265,7 +265,7 @@ class Worker(Handler, ConsumerMixin):
                 scheduler_name = DEFAULT_SCHEDULER
                 # print("using default scheduler", DEFAULT_SCHEDULER)
                 scheduler = schedulers[DEFAULT_SCHEDULER].from_config(self.pipe.scheduler.config)
-            logger.info(f"Using scheduler {scheduler_name}")
+            logger.info("Using scheduler %s", scheduler_name)
             self.pipe.scheduler = scheduler
             scheduler_cls = self.pipe.scheduler.__class__.__name__
             with torch.inference_mode():
