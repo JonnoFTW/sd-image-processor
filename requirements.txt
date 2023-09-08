@@ -1,6 +1,5 @@
 diffusers
 kombu
-torchdynamo
 pillow
 humanize
 pynvml
