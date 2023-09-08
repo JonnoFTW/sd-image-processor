@@ -400,6 +400,13 @@ def show_gpu_mem_stats():
     logger.debug(f'total : {info.total}b\t ({humanize.naturalsize(info.total)})')
     logger.debug(f'free  : {info.free}b\t ({humanize.naturalsize(info.free)})')
     logger.debug(f'used  : {info.used}b\t ({humanize.naturalsize(info.used)})')
+    print(torch.cuda.memory_summary(device=None, abbreviated=False))
+
+
+class WaterMarker:
+    @staticmethod
+    def apply_watermark(image):
+        return image
 
 
 def get_pipe(name):
@@ -418,6 +425,10 @@ def get_pipe(name):
         safety_checker=None,
         requires_safety_checker=False
     )
+    if 'pipeline' in config:
+        kwargs['custom_pipeline'] = config['pipeline']
+    if 'variant' in config:
+        kwargs['variant'] = config['variant']
 
     vae = config.get('vae')
     if vae:
@@ -434,6 +445,8 @@ def get_pipe(name):
     else:
         scheduler = schedulers[DEFAULT_SCHEDULER]
         pipe.scheduler = scheduler.from_config(pipe.scheduler.config)
+    if hasattr(pipe, 'watermark'):
+        pipe.watermark = WaterMarker()
     pipe.enable_xformers_memory_efficient_attention()
     pipe.enable_attention_slicing()
     pipe.enable_vae_slicing()
