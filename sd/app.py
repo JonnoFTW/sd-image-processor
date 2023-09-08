@@ -168,7 +168,29 @@ class Worker(Handler, ConsumerMixin):
         print("Exited process_queue()")
 
     def enqueue_image_request(self, message: kombu.Message):
+        # if the message is an image generation request, put it on the queue
+        # otherwise, we run it immediately
+        if 'cmd' in message.payload:
+            return self.handle_command(message)
         self.queue.put_nowait(message)
+
+    def handle_command(self, message: kombu.Message):
+        cmd = message.payload.get('cmd')
+        if cmd == 'ls_models':
+            things = models.keys()
+        elif cmd == 'ls_schedulers':
+            things = schedulers.keys()
+        else:
+            message.ack()
+            return
+        result = {
+            'result': {
+                'cmd': cmd,
+                'things': [m for m in things],
+            },
+            'headers': message.payload.get('headers', {})
+        }
+        return self.send_response(result, message)
 
     @property
     def pipe(self):
@@ -185,6 +207,20 @@ class Worker(Handler, ConsumerMixin):
     @property
     def model_name(self):
         return getattr(self._model_name, 'val', None)
+
+    def send_response(self, result, message: kombu.Message):
+        with get_connection() as connection:
+            with connection.channel() as channel:
+                producer = Producer(channel)
+                # print("publishing result to", self.exchange, 'routing_key=', message.headers['return-key'])
+                producer.publish(
+                    result,
+                    exchange=self.exchange,
+                    routing_key=message.headers['return-key'],
+                    serializer='json',
+                    retry=True
+                )
+        message.ack()
 
     @model_name.setter
     def model_name(self, model_name):
@@ -315,21 +351,9 @@ class Worker(Handler, ConsumerMixin):
         except Exception as exc:
             result = {'error': str(exc), 'headers': payload.get('headers')}
             logging.critical(exc, exc_info=True)
+        self.send_response(result, message)
 
-        with get_connection() as connection:
-            with connection.channel() as channel:
-                producer = Producer(channel)
-                # print("publishing result to", self.exchange, 'routing_key=', message.headers['return-key'])
-                producer.publish(
-                    result,
-                    exchange=self.exchange,
-                    routing_key=message.headers['return-key'],
-                    serializer='json',
-                    retry=True
-                )
-        message.ack()
-
-    def upscale(self, image, args, generator) -> Image:
+    def upscale(self, image, args, generator) -> PIL.Image:
         """
         Scale an image up by scale, if <= 1, do nothing
         :param image: the image to be scaled
